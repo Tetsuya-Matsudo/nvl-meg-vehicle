@@ -536,6 +536,10 @@ var V_TOKEN = new URLSearchParams(location.search).get('v') || '';
 
 // GAS Web App の exec URL（doPost 宛て・URL不変）
 var EXEC_URL = 'https://script.google.com/macros/s/AKfycbxlHX3ZNdziTa8Y3dNlj9vbE65mFsbqwuCUphC0Ae3WI9DcC56KPo8AHKbqBfix0eU9/exec';
+// LINE WORKS Developer Console で発行したWOFF IDを設定。空ならWOFF無効=QR/手入力モード（従来どおり）
+var WOFF_ID = '';
+// WOFF SDK（LINE WORKS公式CDN・docs記載の正式URL）
+var WOFF_SDK_URL = 'https://static.worksmobile.net/static/wm/woff/edge/3.7.1/sdk.js';
 // google.script.run 代替。Content-Type text/plain で CORS preflight を回避（6/15デモと同型）。
 // サーバが {ok:false} を返しても resolve（成功扱いで呼び出し側が res.ok を見る）。ネットワーク/パース失敗のみ reject。
 function callApi(action, params){
@@ -567,6 +571,7 @@ var STATE = {
   damageTag: '',     // 部位タグ
   ocrRaw: '',        // OCR生値（rawText・§5精度検証の材料）
   ocrApplied: null,  // OCR自動反映直後のフィールド値スナップショット（手修正フラグ判定用）
+  woffProfile: null, // {name, userId} — LINE WORKS内（WOFF）で開いた時だけ入る。WOFF外は常にnull
   navStack: [],
 };
 
@@ -630,6 +635,57 @@ function goBack(){
   var prev = STATE.navStack.pop();
   if(prev){ showScreen(prev,false); if(prev==="home") renderHome(); }
   else { showScreen("home",false); renderHome(); }
+}
+
+/* ===== WOFF初期化（着脱式・フォールバック安全） =====
+   LINE WORKS内（WOFFブラウザ）で開いた時だけ担当者名を自動入力し、lineworks_userId を日報に自動記録する。
+   - WOFF_ID が空 → 何もせず従来 boot（QR/手入力モード・完全従来動作）
+   - SDKロード失敗 / init失敗 / getProfile失敗 → すべて握りつぶして従来 boot（現場を止めない）
+   - タイムアウト保護：SDKロード＋initに5秒上限。超えたら従来 boot を先に走らせる
+   docs準拠API: woff.init({woffId}) → Promise / woff.isInClient() → boolean(同期) /
+                woff.getProfile() → Promise<{domainId, userId, displayName}> */
+function initWoffThenBoot(){
+  if(!WOFF_ID){ boot(); return; }
+  var booted = false;
+  function bootOnce(){ if(!booted){ booted = true; boot(); } }
+  var timer = setTimeout(function(){
+    console.warn('WOFF: 5秒タイムアウト。従来モードで起動します');
+    showDebug('WOFF timeout(5s) → 従来boot');
+    bootOnce();
+  }, 5000);
+  var s = document.createElement('script');
+  s.charset = 'utf-8';
+  s.src = WOFF_SDK_URL;
+  s.onload = function(){
+    try{
+      woff.init({ woffId: WOFF_ID })
+        .then(function(){
+          // LINE WORKS内判定（同期）。外部ブラウザ（QR起動）なら何もしない
+          if(woff.isInClient()){
+            return woff.getProfile().then(function(p){
+              if(p && (p.displayName || p.userId)){
+                STATE.woffProfile = { name: p.displayName || '', userId: p.userId || '' };
+              }
+            });
+          }
+        })
+        .catch(function(err){
+          console.warn('WOFF init/getProfile失敗（従来モードで続行）', err);
+          showDebug('WOFF init/getProfile失敗: '+ (err && err.message ? err.message : String(err)));
+        })
+        .then(function(){ clearTimeout(timer); bootOnce(); });
+    }catch(e){
+      console.warn('WOFF SDK実行エラー（従来モードで続行）', e);
+      showDebug('WOFF SDK実行エラー: '+ String(e));
+      clearTimeout(timer); bootOnce();
+    }
+  };
+  s.onerror = function(){
+    console.warn('WOFF SDKロード失敗（従来モードで続行）');
+    showDebug('WOFF SDKロード失敗 → 従来boot');
+    clearTimeout(timer); bootOnce();
+  };
+  document.head.appendChild(s);
 }
 
 /* ===== 起動 ===== */
@@ -814,7 +870,8 @@ function startNewReport(){
   STATE.ocrRaw=""; STATE.ocrApplied=null;
   $("reportVehicle").innerHTML = vehicleBannerHtml(STATE.vehicle);
   $("fDate").value = todayLabel();
-  $("fDriver").value = "";
+  // WOFF経由（LINE WORKS内）ならプロフィール名を初期値に自動入力（編集可のまま・WOFF外は従来どおり空欄）
+  $("fDriver").value = (STATE.woffProfile && STATE.woffProfile.name) || "";
   $("fStartKm").value = STATE.vehicle["最新走行km"] || "";
   $("prevKmTag").textContent = "前回帰社㎞ "+ fmt(STATE.vehicle["最新走行km"]||0) +" を初期表示";
   $("fStartTime").value = nowTime();
@@ -905,7 +962,8 @@ function submitDepart(){
     "開始時刻": $("fStartTime").value || nowTime(),
     "点検結果": inspectResultJson(),
     "備考": "",
-    "入力元": "QR手入力"
+    "lineworks_userId": (STATE.woffProfile && STATE.woffProfile.userId) || "",
+    "入力元": STATE.woffProfile ? "WOFF" : "QR手入力"
   };
   // 保険：ローカルにも下書き
   saveLocalDraft({vehicle_id:STATE.vehicle.vehicle_id, driver:driver, startKm:startKm, startTime:o["開始時刻"], insp:STATE.insp, date:todayISO()});
@@ -1015,6 +1073,8 @@ function openHandover(){
     + '<input type="text" id="hoDriver" list="driverList" placeholder="お名前を入力（例：鈴木 太郎）" autocomplete="off"></div>'
     + '<button class="btn btn-primary" id="hoSubmitBtn" onclick="submitHandover()">交代を記録して出発</button>'
     + '</div>';
+  // WOFF経由（LINE WORKS内）ならプロフィール名を初期値に自動入力（編集可のまま・WOFF外は従来どおり空欄）
+  if(STATE.woffProfile && STATE.woffProfile.name) $("hoDriver").value = STATE.woffProfile.name;
   var card = $("handoverCard");
   if(card && card.scrollIntoView) card.scrollIntoView({behavior:"smooth", block:"start"});
 }
@@ -1041,7 +1101,9 @@ function submitHandover(){
       + 'border-color:rgba(255,255,255,.35);border-top-color:#fff;"></span>記録中…';
   }
 
-  callApi('handoverTrip', {payload:{trip_id: ot.trip_id, "現在km": km, "新担当者": name}})
+  callApi('handoverTrip', {payload:{trip_id: ot.trip_id, "現在km": km, "新担当者": name,
+      "lineworks_userId": (STATE.woffProfile && STATE.woffProfile.userId) || "",
+      "入力元": STATE.woffProfile ? "WOFF" : "QR手入力"}})
     .then(function(res){
       if(res && res.ok){
         // 返り値でSTATE更新（新担当の進行中バナーが即出る状態に）
@@ -1377,7 +1439,7 @@ function showDebug(msg){ var d=document.getElementById('debugbar'); if(!d) retur
 
 /* ===== 初期化 ===== */
 $("fDriver").addEventListener("input", onDriverInput);
-boot();
+initWoffThenBoot();  // WOFF_ID 空なら即従来 boot（完全従来動作）
 </script>
 <div id="debugbar" style="display:none;position:fixed;left:0;right:0;bottom:0;z-index:9999;background:#300;color:#fdd;font:11px/1.4 monospace;padding:6px 8px;max-height:38vh;overflow:auto;white-space:pre-wrap;word-break:break-all;"></div>
 </body>
