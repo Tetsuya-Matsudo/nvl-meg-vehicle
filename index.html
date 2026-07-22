@@ -497,6 +497,71 @@
       <!-- 操作ボタン -->
       <div id="reportActions"></div>
     </div>
+
+    <!-- ===== 給油だけ記録（v9(C1)・運行と独立に給油履歴へ直行） ===== -->
+    <div class="screen" id="sc-fuelonly">
+      <div class="lt-wrap">
+        <h1 class="lt" style="font-size:22px;">給油だけ記録</h1>
+        <div class="lt-sub">運行の記録とは別に、給油だけを記録します</div>
+      </div>
+      <div class="vehicle-banner" id="foVehicle"></div>
+      <label class="photo-btn">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.3l.95-1.55a1.5 1.5 0 0 1 1.28-.72h3.94a1.5 1.5 0 0 1 1.28.72L16.2 6h1.3A2.5 2.5 0 0 1 20 8.5v8a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5v-8Z" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12.5" r="3.2" stroke="currentColor" stroke-width="1.6"/></svg>
+        レシートを撮影して自動読取
+        <input type="file" accept="image/*" capture="environment" onchange="onFoReceiptPicked(this)">
+      </label>
+      <div id="foOcrStatus" aria-live="polite"></div>
+      <div class="km-row" style="margin-top:12px;">
+        <div class="field"><label>給油量(ℓ) <span class="auto">自動/手修正可</span></label><input type="number" id="foFuelL" inputmode="decimal"></div>
+        <div class="field"><label>金額(円) <span class="auto">自動/手修正可</span></label><input type="number" id="foFuelYen" inputmode="numeric"></div>
+      </div>
+      <div class="km-row" style="margin-top:12px;">
+        <div class="field"><label>給油日 <span class="auto">自動/手修正可</span></label><input type="date" id="foFuelDate"></div>
+        <div class="field"><label>スタンド</label><input type="text" id="foFuelStation" placeholder="任意"></div>
+      </div>
+      <div class="field" style="margin-top:12px;">
+        <label>単価(円/ℓ) <span class="auto">自動/手修正可</span></label>
+        <input type="number" id="foFuelUnit" inputmode="decimal">
+      </div>
+      <div class="field">
+        <label>担当者（任意）</label>
+        <input type="text" id="foDriver" list="driverList" placeholder="お名前を入力（例：鈴木 太郎）" autocomplete="off">
+      </div>
+      <div id="foFuelThumb" class="thumb-row"></div>
+      <div style="margin-top:var(--sp-4);padding-bottom:calc(var(--sp-6) + env(safe-area-inset-bottom));">
+        <button class="btn btn-primary" id="foSubmitBtn" onclick="submitFuelOnly()">給油を記録する</button>
+      </div>
+    </div>
+
+    <!-- ===== 後から入力・記録の訂正（v9(C2)遡及入力 ＋ v9(C3)直近帰社km訂正） ===== -->
+    <div class="screen" id="sc-backfill">
+      <div class="lt-wrap">
+        <h1 class="lt" style="font-size:22px;">後から入力・記録の訂正</h1>
+        <div class="lt-sub">入力を忘れた日の記録と、直近の帰社㎞の訂正ができます</div>
+      </div>
+      <div class="vehicle-banner" id="bfVehicle"></div>
+
+      <h2 class="sec">入力を忘れた日の記録（昨日以前）</h2>
+      <div class="card">
+        <div class="field"><label>使用日 <span class="auto">昨日以前のみ</span></label><input type="date" id="bfDate"></div>
+        <div class="field">
+          <label>担当者</label>
+          <input type="text" id="bfDriver" list="driverList" placeholder="お名前を入力（例：鈴木 太郎）" autocomplete="off">
+        </div>
+        <div class="km-row">
+          <div class="field"><label>出発㎞</label><input type="number" id="bfStartKm" inputmode="numeric"></div>
+          <div class="field"><label>帰社㎞</label><input type="number" id="bfEndKm" inputmode="numeric"></div>
+        </div>
+        <div class="km-row" style="margin-top:12px;">
+          <div class="field"><label>開始時刻（任意）</label><input type="time" id="bfStartTime"></div>
+          <div class="field"><label>終了時刻（任意）</label><input type="time" id="bfEndTime"></div>
+        </div>
+        <button class="btn btn-primary" id="bfSubmitBtn" style="margin-top:var(--sp-3);" onclick="submitBackfill()">この内容で記録する</button>
+      </div>
+
+      <h2 class="sec" style="margin-top:var(--sp-4);">直近の帰社㎞を直す</h2>
+      <div class="card" id="amendFinCard" style="margin-bottom:calc(var(--sp-6) + env(safe-area-inset-bottom));"></div>
+    </div>
   </div>
 </div>
 
@@ -559,6 +624,7 @@ function callApi(action, params){
 var STATE = {
   vehicle: null,     // {vehicle_id, 号車, 車種, ナンバー, 所属店舗, 冷蔵車フラグ, 最新走行km, ...}
   openTrip: null,    // 進行中運行日報 or null
+  lastFinishedTrip: null, // v9(C3) 直近の完了日報（帰社km訂正の対象・bootstrapが返す）
   drivers: [],       // 担当者候補（氏名配列）
   alerts: [],        // メンテ赤アラート
   allVehicles: [],   // 手動選択用（bootstrap が返せば使う・無ければ空）
@@ -567,10 +633,16 @@ var STATE = {
   inspItems: [],     // 点検項目名配列
   fuelImage: null,   // {base64, mime, url?}
   fuelImageUrl: '',  // アップロード済みURL
+  fuelUploadPromise: null, // v9(C4) 給油明細アップロードの完了待ちPromise（送信ゲート用）
   damageImage: null, // {base64, mime}
   damageTag: '',     // 部位タグ
   ocrRaw: '',        // OCR生値（rawText・§5精度検証の材料）
   ocrApplied: null,  // OCR自動反映直後のフィールド値スナップショット（手修正フラグ判定用）
+  foFuelImage: null,        // v9(C1) 給油だけ記録：レシート画像 {base64, mime}
+  foFuelImageUrl: '',       // v9(C1) 給油だけ記録：アップロード済みURL
+  foFuelUploadPromise: null,// v9(C1) 給油だけ記録：アップロード完了待ちPromise
+  foOcrRaw: '',             // v9(C1) 給油だけ記録：OCR生値
+  foOcrApplied: null,       // v9(C1) 給油だけ記録：OCR自動反映スナップショット（手修正フラグ判定用）
   woffProfile: null, // {name, userId} — LINE WORKS内（WOFF）で開いた時だけ入る。WOFF外は常にnull
   navStack: [],
 };
@@ -590,6 +662,12 @@ function todayLabel(){
   var d = new Date();
   var w = ["日","月","火","水","木","金","土"][d.getDay()];
   return todayISO()+"（"+w+"）";
+}
+// v9(C2): 昨日の 'yyyy-MM-dd'（遡及入力の使用日上限＝過去日専用）
+function yesterdayISO(){
+  var d = new Date();
+  d.setDate(d.getDate()-1);
+  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
 }
 function nowTime(){
   var d = new Date();
@@ -621,7 +699,7 @@ function fileToBase64(file, cb){
 }
 
 /* ===== 画面遷移 ===== */
-var SCREENS = ["home","novehicle","report"];
+var SCREENS = ["home","novehicle","report","fuelonly","backfill"];  // v9: fuelonly(C1)・backfill(C2/C3) 追加
 function showScreen(name, push){
   if(push){
     var cur = SCREENS.filter(function(s){ return $("sc-"+s).classList.contains("active"); })[0];
@@ -706,6 +784,7 @@ function onBootstrap(res){
   }
   STATE.vehicle    = res.vehicle || null;
   STATE.openTrip   = res.openTrip || null;
+  STATE.lastFinishedTrip = res.lastFinishedTrip || null;  // v9(C3) 直近の完了日報（帰社km訂正の対象）
   STATE.drivers    = res.drivers || [];
   STATE.alerts     = res.alerts || [];
   STATE.allVehicles= res.allVehicles || [];  // bootstrap が返せば手動選択に利用（任意）
@@ -777,13 +856,19 @@ function renderHome(){
 
   // アクション（進行中あり＝主ボタン「帰社入力へ進む」＋副ボタン「交代して出発」。
   //   #homeActions は column-reverse なので DOM順 [primary, secondary, 注記] → 視覚は 注記/副/主（主が最下端） ）
+  // v9(C1): 副ボタン「給油だけ記録する」を進行中の有無に関わらず常設
+  // v9(C2): 最下部（DOM末尾＝視覚最上段の小リンク）に「後から入力・記録の訂正」
   if(STATE.openTrip){
     $("homeActions").innerHTML = '<button class="btn btn-primary" onclick="resumeTrip()">帰社入力へ進む</button>'
       + '<button class="btn btn-ghost" onclick="openHandover()">交代して出発（前の運行を締める）</button>'
-      + '<p class="small center" style="margin-top:8px;">出発の記録済み。続きから入力できます</p>';
+      + '<button class="btn btn-ghost" onclick="openFuelOnly()">給油だけ記録する</button>'
+      + '<p class="small center" style="margin-top:8px;">出発の記録済み。続きから入力できます</p>'
+      + '<button class="toggle-collapse" style="margin:0;" onclick="openBackfill()">後から入力・記録の訂正</button>';
   } else {
     $("handoverArea").innerHTML = "";
-    $("homeActions").innerHTML = '<button class="btn btn-primary" onclick="startNewReport()">この車両で日報を始める（出発）</button>';
+    $("homeActions").innerHTML = '<button class="btn btn-primary" onclick="startNewReport()">この車両で日報を始める（出発）</button>'
+      + '<button class="btn btn-ghost" onclick="openFuelOnly()">給油だけ記録する</button>'
+      + '<button class="toggle-collapse" style="margin:0;" onclick="openBackfill()">後から入力・記録の訂正</button>';
   }
 }
 
@@ -866,7 +951,7 @@ function startNewReport(){
   STATE.phase = "depart";
   STATE.insp = {};
   STATE.inspItems.forEach(function(nm){ STATE.insp[nm]=null; });
-  STATE.fuelImage=null; STATE.fuelImageUrl=""; STATE.damageImage=null; STATE.damageTag="";
+  STATE.fuelImage=null; STATE.fuelImageUrl=""; STATE.fuelUploadPromise=null; STATE.damageImage=null; STATE.damageTag="";
   STATE.ocrRaw=""; STATE.ocrApplied=null;
   $("reportVehicle").innerHTML = vehicleBannerHtml(STATE.vehicle);
   $("fDate").value = todayLabel();
@@ -946,6 +1031,45 @@ function saveLocalDraft(obj){ try{ localStorage.setItem(LS_KEY, JSON.stringify(o
 function loadLocalDraft(){ try{ return JSON.parse(localStorage.getItem(LS_KEY)); }catch(e){ return null; } }
 function clearLocalDraft(){ try{ localStorage.removeItem(LS_KEY); }catch(e){} }
 
+/* ===== v9 共通ヘルパ ===== */
+// v9(A2): 入力kmとマスター最新走行kmの突合確認（送信前）。
+// 逆行（1kmでも）または前進+10km超の乖離は confirm。OKなら送信続行（ブロックはしない）。
+function confirmKmVsMaster(km){
+  var latest = Number((STATE.vehicle && STATE.vehicle["最新走行km"]) || 0);
+  if(!(latest > 0) || isNaN(km)) return true;
+  if(km < latest){
+    return confirm("前回帰社㎞"+fmt(latest)+"より小さい値です。メーターをもう一度確認してください。このまま記録しますか？");
+  }
+  if(km - latest > 10){
+    return confirm("前回帰社㎞"+fmt(latest)+"より離れた値です。メーターをもう一度確認してください。このまま記録しますか？");
+  }
+  return true;
+}
+// v9(C4): 画像アップロードの完了待ち（最大maxMs）。promise未設定なら即解決
+function waitUploadDone(promise, maxMs){
+  if(!promise) return Promise.resolve();
+  return Promise.race([
+    promise,
+    new Promise(function(res){ setTimeout(res, maxMs); })
+  ]);
+}
+// v9(C2/C3): 画面を切り替えずに bootstrap を取り直して STATE を更新する
+//（遡及入力・帰社km訂正の成功後にマスター最新走行km／直近完了日報の表示を最新化する用）
+function refreshStateSilent(after){
+  callApi('bootstrap', {vToken:V_TOKEN})
+    .then(function(res){
+      if(res && res.ok){
+        if(res.vehicle) STATE.vehicle = res.vehicle;
+        STATE.openTrip = res.openTrip || null;
+        STATE.lastFinishedTrip = res.lastFinishedTrip || null;
+        if(res.drivers) STATE.drivers = res.drivers;
+        renderDriverList();
+      }
+      if(after) after();
+    })
+    .catch(function(){ if(after) after(); });
+}
+
 /* ===== 出発を記録（startTrip） ===== */
 function submitDepart(){
   var driver = $("fDriver").value.trim();
@@ -954,6 +1078,8 @@ function submitDepart(){
   if($("fStartKm").value.trim()===""){ toast("出発㎞を入力してください"); return; }
   var startKm = Number($("fStartKm").value);
   if(isNaN(startKm)){ toast("出発㎞が数値ではありません"); return; }
+  // v9(A2): マスター最新走行kmとの逆行・乖離を送信前に確認（OKなら送信・ブロックしない）
+  if(!confirmKmVsMaster(startKm)) return;
 
   var o = {
     vehicle_id: STATE.vehicle.vehicle_id,
@@ -984,6 +1110,12 @@ function submitDepart(){
         showScreen("home", false);
       } else {
         if(btn){ btn.disabled=false; btn.textContent="出発を記録（進行中で保存）"; }
+        // v9(B3): 別端末・直前の送信で既に進行中がある → bootstrap を取り直して進行中バナーを出す
+        if(res && res.code === 'OPEN_TRIP_EXISTS'){
+          toast(res.error || "進行中の日報があります");
+          runBootstrap(V_TOKEN);
+          return;
+        }
         toast("記録に失敗しました" + (res && res.error ? "："+res.error : ""));
       }
     })
@@ -1008,7 +1140,7 @@ function resumeTrip(){
       STATE.insp[k] = (val==='ok'||val==='ng') ? val : (val==='OK'?'ok':(val==='NG'?'ng':null));
     });
   }catch(e){}
-  STATE.fuelImage=null; STATE.fuelImageUrl=""; STATE.damageImage=null; STATE.damageTag="";
+  STATE.fuelImage=null; STATE.fuelImageUrl=""; STATE.fuelUploadPromise=null; STATE.damageImage=null; STATE.damageTag="";
   STATE.ocrRaw=""; STATE.ocrApplied=null;
   $("reportVehicle").innerHTML = vehicleBannerHtml(STATE.vehicle);
   $("fDate").value = todayLabel();
@@ -1090,6 +1222,8 @@ function submitHandover(){
   if(isNaN(km)){ toast("メーター㎞が数値ではありません"); return; }
   var depKm = Number(ot["出発km"]||0);
   if(km < depKm){ toast("メーター値が出発㎞より小さいです"); return; }
+  // ※交代時の confirmKmVsMaster は撤去（COO判断 7/22 00:50）：交代の現在kmはマスターより走行分だけ
+  //   前進しているのが正常で毎回confirmが鳴る＝アラーム疲れのみ。逆行は上の km<出発㎞ ブロックが既にカバー
   var name = $("hoDriver").value.trim();
   if(!name){ toast("あなたの名前を入力してください"); return; }
 
@@ -1207,6 +1341,245 @@ function submitAmend(){
     });
 }
 
+/* ===== v9(C1): 給油だけ記録（運行と独立・進行中の有無に関わらず使える） ===== */
+function openFuelOnly(){
+  if(!STATE.vehicle){ toast("車両情報がありません。QRから開き直してください"); return; }
+  STATE.foFuelImage=null; STATE.foFuelImageUrl=""; STATE.foFuelUploadPromise=null;
+  STATE.foOcrRaw=""; STATE.foOcrApplied=null;
+  $("foVehicle").innerHTML = vehicleBannerHtml(STATE.vehicle);
+  $("foFuelL").value=""; $("foFuelYen").value=""; $("foFuelUnit").value=""; $("foFuelStation").value="";
+  $("foFuelDate").value = todayISO();   // 初期=今日（手修正可）
+  // WOFF経由（LINE WORKS内）ならプロフィール名を初期値に（編集可・任意欄）
+  $("foDriver").value = (STATE.woffProfile && STATE.woffProfile.name) || "";
+  $("foFuelThumb").innerHTML=""; $("foOcrStatus").innerHTML="";
+  var btn = $("foSubmitBtn");
+  if(btn){ btn.disabled=false; btn.textContent="給油を記録する"; }
+  showScreen("fuelonly", true);
+}
+function onFoReceiptPicked(input){
+  var file = input.files && input.files[0];
+  if(!file) return;
+  fileToBase64(file, function(base64, mime, dataUrl){
+    STATE.foFuelImage = {base64:base64, mime:mime};
+    $("foFuelThumb").innerHTML = '<div class="thumb"><img src="'+dataUrl+'"><button class="rm" onclick="clearFoFuelImage()">×</button></div>';
+    $("foOcrStatus").innerHTML = '<div class="ocr-status loading">レシートを読み取り中…（数秒）</div>';
+    callApi('ocrReceipt', {base64:base64, mime:mime}).then(onFoOcrResult).catch(onFoOcrFail);
+    // 画像アップロードも並行（証跡）。送信時に完了を最大8秒待つ（C4と同じゲート）
+    STATE.foFuelUploadPromise = callApi('uploadImage', {base64:base64, mime:mime, kind:"fuel"})
+      .then(function(res){ if(res && res.ok && STATE.foFuelImage) STATE.foFuelImageUrl = res.url; })
+      .catch(function(){ /* 画像保存失敗は後追い可（送信時にゲートで確認） */ });
+  });
+  input.value = "";
+}
+function onFoOcrResult(res){
+  if(!res || res.ok===false){ onFoOcrFail(); return; }
+  // 自動反映（手修正可）
+  if(res.date)   $("foFuelDate").value = res.date;
+  if(res.amount!=null) $("foFuelYen").value = res.amount;
+  if(res.liters!=null) $("foFuelL").value = res.liters;
+  if(res.unitPrice!=null) $("foFuelUnit").value = res.unitPrice;
+  if(res.station) $("foFuelStation").value = res.station;
+  // OCR生値＋自動反映直後のスナップショット（手修正フラグ判定・帰社画面の給油と同仕様）
+  STATE.foOcrRaw = res.rawText || "";
+  STATE.foOcrApplied = {
+    L: $("foFuelL").value, yen: $("foFuelYen").value, date: $("foFuelDate").value,
+    station: $("foFuelStation").value, unit: $("foFuelUnit").value
+  };
+  var conf = res.confidence || "";
+  if(conf==="high"){
+    $("foOcrStatus").innerHTML = '<div class="ocr-status ok">読取完了。内容をご確認ください（違えば直接修正できます）</div>';
+  } else {
+    $("foOcrStatus").innerHTML = '<div class="ocr-status low">一部読み取れませんでした。空欄を手入力してください</div>';
+  }
+}
+function onFoOcrFail(){
+  $("foOcrStatus").innerHTML = '<div class="ocr-status fail">自動読取に失敗しました。金額・数量を手入力してください</div>';
+}
+function clearFoFuelImage(){
+  STATE.foFuelImage = null; STATE.foFuelImageUrl = ""; STATE.foFuelUploadPromise = null;
+  STATE.foOcrRaw = ""; STATE.foOcrApplied = null;
+  $("foFuelThumb").innerHTML=""; $("foOcrStatus").innerHTML="";
+}
+function submitFuelOnly(){
+  // 空欄は Number("")===0 になるため、数値化前に生文字列で判定する
+  var rawL = $("foFuelL").value.trim(), rawY = $("foFuelYen").value.trim();
+  if(rawL==="" && rawY===""){ toast("給油量または金額を入力してください"); return; }
+  var L = rawL==="" ? null : Number(String(rawL).replace(/[,\s]/g,""));
+  var Y = rawY==="" ? null : Number(String(rawY).replace(/[,\s]/g,""));
+  if((L!==null && (isNaN(L) || L<0)) || (Y!==null && (isNaN(Y) || Y<0))){
+    toast("給油量・金額は0以上の数値で入力してください"); return;
+  }
+  if(!((L!==null && L>0) || (Y!==null && Y>0))){ toast("給油量または金額を入力してください"); return; }
+
+  var btn = $("foSubmitBtn");
+  if(btn){ btn.disabled=true; btn.textContent="記録中…"; }
+
+  // レシート写真のアップロード完了を最大8秒待ってから送信（C4と同じゲート）
+  waitUploadDone(STATE.foFuelUploadPromise, 8000).then(function(){
+    if(STATE.foFuelImage && !STATE.foFuelImageUrl){
+      if(!confirm("明細写真の保存が完了していません。このまま送信しますか？（写真URLなしで記録されます）")){
+        if(btn){ btn.disabled=false; btn.textContent="給油を記録する"; }
+        return;
+      }
+    }
+    // 手修正フラグ（OCR自動反映値と送信値の不一致で判定。OCRなしなら「手入力」・帰社画面の給油と同仕様）
+    var editFlag = "";
+    var ap = STATE.foOcrApplied;
+    if(ap){
+      var same = String($("foFuelL").value)===String(ap.L)
+        && String($("foFuelYen").value)===String(ap.yen)
+        && String($("foFuelDate").value)===String(ap.date)
+        && String($("foFuelStation").value)===String(ap.station)
+        && String($("foFuelUnit").value)===String(ap.unit);
+      editFlag = same ? "" : "手修正";
+    } else {
+      editFlag = "手入力";
+    }
+    callApi('saveFuel', {payload:{
+        vehicle_id: STATE.vehicle.vehicle_id,
+        "給油日": $("foFuelDate").value || todayISO(),
+        "給油量L": $("foFuelL").value || "",
+        "給油金額": $("foFuelYen").value || "",
+        "単価": $("foFuelUnit").value || "",
+        "スタンド": $("foFuelStation").value || "",
+        "給油明細画像URL": STATE.foFuelImageUrl || "",
+        "OCR生値": STATE.foOcrRaw || "",
+        "手修正フラグ": editFlag,
+        "担当者": $("foDriver").value.trim()
+      }})
+      .then(function(res){
+        if(res && res.ok){
+          toast("給油を記録しました");
+          renderHome();
+          showScreen("home", false);
+        } else {
+          if(btn){ btn.disabled=false; btn.textContent="給油を記録する"; }
+          toast("記録に失敗しました" + (res && res.error ? "："+res.error : ""));
+        }
+      })
+      .catch(function(err){
+        if(btn){ btn.disabled=false; btn.textContent="給油を記録する"; }
+        toast("通信に失敗しました。電波の良い所で再送してください");
+        console.error(err);
+      });
+  });
+}
+
+/* ===== v9(C2/C3): 後から入力・記録の訂正 ===== */
+function openBackfill(){
+  if(!STATE.vehicle){ toast("車両情報がありません。QRから開き直してください"); return; }
+  $("bfVehicle").innerHTML = vehicleBannerHtml(STATE.vehicle);
+  $("bfDate").value = "";
+  $("bfDate").max = yesterdayISO();   // 過去日専用（今日は選択不可・サーバ側でも検証）
+  $("bfDriver").value = (STATE.woffProfile && STATE.woffProfile.name) || "";
+  $("bfStartKm").value=""; $("bfEndKm").value="";
+  $("bfStartTime").value=""; $("bfEndTime").value="";
+  var btn = $("bfSubmitBtn");
+  if(btn){ btn.disabled=false; btn.textContent="この内容で記録する"; }
+  renderAmendFinCard();
+  showScreen("backfill", true);
+}
+// v9(C3): 「直近の帰社㎞を直す」カード（進行中trip がある間は訂正不可＝先に帰社入力）
+function renderAmendFinCard(){
+  var el = $("amendFinCard");
+  if(STATE.openTrip){
+    el.innerHTML = '<p class="small" style="margin:0;">進行中の日報があるため訂正できません。先に帰社入力を終えてください。</p>';
+    return;
+  }
+  var lf = STATE.lastFinishedTrip;
+  if(!lf || !lf.trip_id){
+    el.innerHTML = '<p class="small" style="margin:0;">訂正できる完了済みの記録がありません。</p>';
+    return;
+  }
+  el.innerHTML =
+    '<div class="small" style="margin-bottom:10px;">対象（直近の完了記録）：'+ String(lf["使用日"]||"")
+    + ' ／ '+ (lf["担当者"]||"担当者なし")
+    + ' ／ 出発 '+ fmt(lf["出発km"]) +'㎞ → 帰社 '+ fmt(lf["帰社km"]) +'㎞</div>'
+    + '<div class="field"><label>正しい帰社㎞</label>'
+    + '<input type="number" id="afKm" inputmode="numeric"></div>'
+    + '<button class="btn btn-ghost" id="afSubmitBtn" onclick="submitAmendFinished()">帰社㎞を訂正する</button>';
+}
+function submitBackfill(){
+  var date = $("bfDate").value;
+  if(!date){ toast("使用日を選んでください"); return; }
+  if(date >= todayISO()){ toast("後から入力できるのは昨日以前の日付だけです"); return; }
+  var driver = $("bfDriver").value.trim();
+  if(!driver){ toast("担当者を入力してください"); return; }
+  // 空欄は Number("")===0 になるため、数値化前に生文字列で判定する
+  if($("bfStartKm").value.trim()===""){ toast("出発㎞を入力してください"); return; }
+  if($("bfEndKm").value.trim()===""){ toast("帰社㎞を入力してください"); return; }
+  var s = Number(String($("bfStartKm").value).replace(/[,\s]/g,""));
+  var e = Number(String($("bfEndKm").value).replace(/[,\s]/g,""));
+  if(isNaN(s)){ toast("出発㎞が数値ではありません"); return; }
+  if(isNaN(e)){ toast("帰社㎞が数値ではありません"); return; }
+  // 逆転値・過大値は confirm（startTrip/finishTrip と同等の確認。OKなら記録・サーバ側で[km要確認]付与）
+  if(e < s && !confirm("帰社㎞が出発㎞より小さい値です。メーターの読み間違いがないか確認してください。このまま記録しますか？")) return;
+  if((e - s) > 150 && !confirm("走行距離が "+fmt(e-s)+"km になります。㎞をもう一度確認してください。このまま記録しますか？")) return;
+
+  var btn = $("bfSubmitBtn");
+  if(btn){ btn.disabled=true; btn.textContent="記録中…"; }
+  callApi('backfillTrip', {payload:{
+      vehicle_id: STATE.vehicle.vehicle_id,
+      "使用日": date,
+      "担当者": driver,
+      "出発km": s,
+      "帰社km": e,
+      "開始時刻": $("bfStartTime").value || "",
+      "終了時刻": $("bfEndTime").value || "",
+      "lineworks_userId": (STATE.woffProfile && STATE.woffProfile.userId) || ""
+    }})
+    .then(function(res){
+      if(btn){ btn.disabled=false; btn.textContent="この内容で記録する"; }
+      if(res && res.ok){
+        toast(date+" の記録を追加しました（走行距離 "+fmt(res["走行距離"])+"km）");
+        $("bfDate").value=""; $("bfStartKm").value=""; $("bfEndKm").value="";
+        $("bfStartTime").value=""; $("bfEndTime").value="";
+        // マスター最新走行km・直近完了日報が変わった可能性 → 静かに取り直して訂正カードを更新
+        refreshStateSilent(function(){ renderAmendFinCard(); });
+      } else {
+        toast("記録に失敗しました" + (res && res.error ? "："+res.error : ""));
+      }
+    })
+    .catch(function(err){
+      if(btn){ btn.disabled=false; btn.textContent="この内容で記録する"; }
+      toast("通信に失敗しました。電波の良い所で再送してください");
+      console.error(err);
+    });
+}
+function submitAmendFinished(){
+  var lf = STATE.lastFinishedTrip;
+  if(!lf || !lf.trip_id){ toast("訂正できる記録がありません"); return; }
+  if(STATE.openTrip){ toast("先に帰社入力を終えてください"); return; }
+  // 空欄は Number("")===0 になるため、数値化前に生文字列で判定する
+  if($("afKm").value.trim()===""){ toast("正しい帰社㎞を入力してください"); return; }
+  var km = Number(String($("afKm").value).replace(/[,\s]/g,""));
+  if(isNaN(km)){ toast("帰社㎞が数値ではありません"); return; }
+  if(km <= 0){ toast("帰社㎞は0より大きい値で入力してください"); return; }
+  var depKm = Number(lf["出発km"]||0);
+  if(km < depKm && !confirm("出発㎞ "+fmt(depKm)+" より小さい値です。このまま訂正しますか？")) return;
+  if((km - depKm) > 150 && !confirm("走行距離が "+fmt(km-depKm)+"km になります。このまま訂正しますか？")) return;
+
+  var btn = $("afSubmitBtn");
+  if(btn){ btn.disabled=true; btn.textContent="訂正中…"; }
+  callApi('amendFinishedTrip', {payload:{trip_id: lf.trip_id, "新帰社km": km}})
+    .then(function(res){
+      if(res && res.ok){
+        toast("帰社㎞を "+fmt(km)+" に訂正しました（走行距離 "+fmt(res["走行距離"])+"km）");
+        // F2(7/22): マスターはサーバが条件付き更新（オーナー判定）になったため、ローカル楽観更新はやめて
+        // 直後の refreshStateSilent（bootstrap取り直し）でサーバ真値を反映する
+        refreshStateSilent(function(){ renderAmendFinCard(); });
+      } else {
+        if(btn){ btn.disabled=false; btn.textContent="帰社㎞を訂正する"; }
+        toast("訂正に失敗しました" + (res && res.error ? "："+res.error : ""));
+      }
+    })
+    .catch(function(err){
+      if(btn){ btn.disabled=false; btn.textContent="帰社㎞を訂正する"; }
+      toast("通信に失敗しました。電波の良い所で再送してください");
+      console.error(err);
+    });
+}
+
 /* ===== オドメーターOCR（出発km・帰社kmの写真撮影→自動転記。転記後も通常inputのまま手修正可） ===== */
 function onOdoPicked(input, targetId, btnId){
   var file = input.files && input.files[0];
@@ -1253,10 +1626,10 @@ function onReceiptPicked(input){
     $("fuelThumb").innerHTML = '<div class="thumb"><img src="'+dataUrl+'"><button class="rm" onclick="clearFuelImage()">×</button></div>';
     $("ocrStatus").innerHTML = '<div class="ocr-status loading">レシートを読み取り中…（数秒）</div>';
     callApi('ocrReceipt', {base64:base64, mime:mime}).then(onOcrResult).catch(onOcrFail);
-    // 画像アップロードも並行（証跡）
-    callApi('uploadImage', {base64:base64, mime:mime, kind:"fuel"})
-      .then(function(res){ if(res && res.ok) STATE.fuelImageUrl = res.url; })
-      .catch(function(){ /* 画像保存失敗は後追い可 */ });
+    // 画像アップロードも並行（証跡）。v9(C4): Promiseを保持し、送信時に完了を最大8秒待つ
+    STATE.fuelUploadPromise = callApi('uploadImage', {base64:base64, mime:mime, kind:"fuel"})
+      .then(function(res){ if(res && res.ok && STATE.fuelImage) STATE.fuelImageUrl = res.url; })
+      .catch(function(){ /* 画像保存失敗は後追い可（送信時にC4ゲートで確認） */ });
   });
   input.value = "";
 }
@@ -1286,6 +1659,7 @@ function onOcrFail(){
 }
 function clearFuelImage(){
   STATE.fuelImage = null; STATE.fuelImageUrl = "";
+  STATE.fuelUploadPromise = null;  // v9(C4): 取り消した画像の遅延URL反映・完了待ちを無効化
   STATE.ocrRaw = ""; STATE.ocrApplied = null;
   $("fuelThumb").innerHTML=""; $("ocrStatus").innerHTML="";
 }
@@ -1357,10 +1731,28 @@ function submitReturn(){
   var s = Number($("fStartKm").value), e = Number($("fEndKm").value);
   if(isNaN(e)){ toast("帰社㎞が数値ではありません"); return; }
   if(e < s){ toast("帰社㎞が出発㎞より小さいです"); return; }
+  // v9(B1): 走行距離150km超は誤桁入力の可能性 → 確認の上で記録（ブロックしない・サーバ側でも[km要確認]付与）
+  if((e - s) > 150 && !confirm("走行距離が "+fmt(e-s)+"km になります。帰社㎞をもう一度確認してください。このまま記録しますか？")) return;
 
   var tripId = (STATE.openTrip && STATE.openTrip.trip_id) || "";
   if(!tripId){ toast("進行中の運行が見つかりません"); return; }
 
+  var btn = $("finishBtn");
+  if(btn){ btn.disabled=true; btn.textContent="送信中…"; }
+
+  // v9(C4): 給油明細写真のアップロード完了を最大8秒待ってから送信（未完なら確認の上、写真URL無しで記録）
+  waitUploadDone(STATE.fuelUploadPromise, 8000).then(function(){
+    if(STATE.fuelImage && !STATE.fuelImageUrl){
+      if(!confirm("明細写真の保存が完了していません。このまま送信しますか？（写真URLなしで記録されます）")){
+        if(btn){ btn.disabled=false; btn.textContent="帰社を記録して送信"; }
+        return;
+      }
+    }
+    sendFinishTrip(tripId, s, e, btn);
+  });
+}
+// finishTrip 送信本体（v9(C4)ゲート通過後に呼ばれる。payload構成・応答処理は従来どおり）
+function sendFinishTrip(tripId, s, e, btn){
   var fuelL = $("fFuelL").value;
   // §5: 手修正フラグ（OCR自動反映値と送信値の不一致で判定。OCRなしで給油入力があれば「手入力」）
   var fuelTouched = ($("fFuelL").value || $("fFuelYen").value || $("fFuelDate").value || $("fFuelStation").value || $("fFuelUnit").value);
@@ -1394,9 +1786,6 @@ function submitReturn(){
     "異常": ngItems().length ? ("NG:"+ngItems().join("/")) : "",
     "備考": $("fNote").value || ""
   };
-
-  var btn = $("finishBtn");
-  if(btn){ btn.disabled=true; btn.textContent="送信中…"; }
 
   callApi('finishTrip', {payload:o})
     .then(function(res){
