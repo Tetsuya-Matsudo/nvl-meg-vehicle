@@ -1055,8 +1055,9 @@ function waitUploadDone(promise, maxMs){
 }
 // v9(C2/C3): 画面を切り替えずに bootstrap を取り直して STATE を更新する
 //（遡及入力・帰社km訂正の成功後にマスター最新走行km／直近完了日報の表示を最新化する用）
+// P2(2026-07-23): Promise を返すよう小改修（openBackfill が .then で再描画できるように。after コールバックも併用可）
 function refreshStateSilent(after){
-  callApi('bootstrap', {vToken:V_TOKEN})
+  return callApi('bootstrap', {vToken:V_TOKEN})
     .then(function(res){
       if(res && res.ok){
         if(res.vehicle) STATE.vehicle = res.vehicle;
@@ -1476,7 +1477,10 @@ function openBackfill(){
   $("bfStartTime").value=""; $("bfEndTime").value="";
   var btn = $("bfSubmitBtn");
   if(btn){ btn.disabled=false; btn.textContent="この内容で記録する"; }
-  renderAmendFinCard();
+  // P2(2026-07-23): 帰社直後に開くと STATE.lastFinishedTrip が起動時のままで「記録がありません」になるため、
+  // 開くたびにサーバから取り直して訂正カードを最新化（取得中は確認中表示・失敗時は手元STATEで描画）
+  $("amendFinCard").innerHTML = '<p class="small" style="margin:0;">最新の記録を確認中…</p>';
+  refreshStateSilent().then(function(){ renderAmendFinCard(); });
   showScreen("backfill", true);
 }
 // v9(C3): 「直近の帰社㎞を直す」カード（進行中trip がある間は訂正不可＝先に帰社入力）
@@ -1793,6 +1797,15 @@ function sendFinishTrip(tripId, s, e, btn){
         clearLocalDraft();
         STATE.openTrip = null;
         if(STATE.vehicle) STATE.vehicle["最新走行km"] = e; // ローカル反映
+        // P2(2026-07-23): 帰社直後に「後から入力・記録の訂正」を開いても直近完了が即出るよう即時更新（第二防衛）
+        STATE.lastFinishedTrip = {
+          trip_id: tripId,
+          vehicle_id: (STATE.vehicle && STATE.vehicle.vehicle_id),
+          "使用日": todayISO(),
+          "担当者": $("fDriver").value || "",
+          "出発km": s,
+          "帰社km": e
+        };
         var dist = (res["走行距離"]!=null) ? res["走行距離"] : (e - s);
         $("sumKm").textContent = fmt(dist)+" km";
         $("sumFuel").textContent = fuelL ? (fuelL+" ℓ") : "なし";
